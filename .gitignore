@@ -2,23 +2,34 @@
 venv/
 .venv/
 
+# Dépendances Node / build
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+dist/
+build/
+
 # Python
 __pycache__/
+.pytest_cache/
+.mypy_cache/
 *.py[cod]
+*.pyc
+*.log
 
 # Variables d'environnement
 .env
 .env.*
 
+# Base de données / uploads
+Data/
+Data/uploads/
+*.sqlite3
+
 # Fichiers IDE
 .vscode/
 .idea/
-
-# Donn�es upload�es
-data/uploads/*
-data/app.sqlite3*
-data/analytics.sqlite3*
-data/.secret_key
 
 # Syst�me
 .DS_Store

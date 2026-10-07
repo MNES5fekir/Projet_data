@@ -36,6 +36,8 @@ Les corrélations utilisent le coefficient de Pearson. Elles décrivent une asso
 
 ## Données et déploiement
 
+Pour un déploiement Docker avec HTTPS automatique, consultez le [guide de déploiement](DEPLOYMENT.md).
+
 L’API `POST /analysis` reçoit le champ `file` en `multipart/form-data`. Elle refuse les extensions autres que CSV et limite les imports à 10 Mo. Le CSV n’est ni enregistré dans le dossier de données applicatif, ni conservé après la requête. Le rapport téléchargé est généré dans le navigateur.
 
 Les routes `GET /analytics/consent`, `POST /analytics/consent` et `POST /analytics/events` gèrent le consentement et les événements autorisés. `GET /analytics/summary` exige `Authorization: Bearer <ANALYTICS_ADMIN_TOKEN>`. Les événements sont purgés après 180 jours. La base `data/analytics.sqlite3` est locale et exclue de Git. L’application ne journalise pas l’adresse IP dans les statistiques; un reverse proxy peut avoir ses propres journaux d’accès à configurer séparément. Utilisez le même domaine de site pour le frontend et l’API, ou un proxy same-origin, afin que le cookie de consentement fonctionne correctement.
