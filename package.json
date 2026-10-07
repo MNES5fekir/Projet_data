@@ -1,0 +1,9 @@
+{
+  "name": "projet-data1",
+  "private": true,
+  "scripts": {
+    "dev:back": ".\\venv\\Scripts\\python.exe -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --reload",
+    "dev:front": "npm --prefix frontend run dev -- --host 0.0.0.0",
+    "dev": "npm run dev:front"
+  }
+}

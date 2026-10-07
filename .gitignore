@@ -14,9 +14,12 @@ __pycache__/
 .vscode/
 .idea/
 
-# Données uploadées
+# Donnï¿½es uploadï¿½es
 data/uploads/*
+data/app.sqlite3*
+data/analytics.sqlite3*
+data/.secret_key
 
-# Système
+# Systï¿½me
 .DS_Store
 Thumbs.db

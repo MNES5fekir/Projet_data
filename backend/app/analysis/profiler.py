@@ -91,22 +91,18 @@ def profile_dataframe(dataframe: pd.DataFrame) -> dict:
 
     if len(numeric_dataframe.columns) >= 2:
         correlation_dataframe = numeric_dataframe.corr()
-
-        for column in correlation_dataframe.columns:
-            for other_column in correlation_dataframe.columns:
-                value = correlation_dataframe.loc[
-                    column,
-                    other_column
-                ]
-
+        numeric_columns = list(correlation_dataframe.columns)
+        for index, column in enumerate(numeric_columns):
+            for other_column in numeric_columns[index + 1:]:
+                value = correlation_dataframe.loc[column, other_column]
                 if pd.isna(value):
                     continue
-
                 correlations.append({
-                    "column": column,
-                    "other_column": other_column,
+                    "column": str(column),
+                    "other_column": str(other_column),
                     "value": round(float(value), 4),
                 })
+        correlations.sort(key=lambda item: abs(item["value"]), reverse=True)
 
     # -------------------------
     # Valeurs manquantes
