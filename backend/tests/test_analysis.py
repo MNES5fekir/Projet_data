@@ -42,3 +42,39 @@ def test_anonymous_analysis_rejects_oversized_file(monkeypatch):
 
     with pytest.raises(ValueError, match="10 Mo"):
         asyncio.run(dataset_service.analyze_csv_upload(upload))
+
+def test_concurrent_analyses_are_capped(monkeypatch):
+    import threading
+    import time
+
+    import anyio
+
+    monkeypatch.setattr(dataset_service, "_analysis_limiter", anyio.CapacityLimiter(2))
+    active, peak, lock = 0, 0, threading.Lock()
+
+    def slow_analysis(filename, content):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.05)
+        with lock:
+            active -= 1
+        return {}
+
+    monkeypatch.setattr(dataset_service, "_analyze_content", slow_analysis)
+
+    async def run_all():
+        uploads = [UploadFile(filename=f"f{i}.csv", file=BytesIO(b"a\n1\n")) for i in range(6)]
+        await asyncio.gather(*(dataset_service.analyze_csv_upload(upload) for upload in uploads))
+
+    asyncio.run(run_all())
+    assert peak == 2
+
+
+def test_api_docs_are_disabled_by_default():
+    from backend.app.main import app
+
+    assert app.openapi_url is None
+    assert app.docs_url is None
+    assert app.redoc_url is None

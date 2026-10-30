@@ -2,11 +2,11 @@ from pydantic import BaseModel
 
 
 class Statistics(BaseModel):
-    mean: float
-    median: float
-    min: float
-    max: float
-    std: float
+    mean: float | None
+    median: float | None
+    min: float | None
+    max: float | None
+    std: float | None
 
 
 class ColumnInfo(BaseModel):
@@ -86,18 +86,6 @@ class DatasetDeleteResponse(BaseModel):
     dataset_id: str
     filename: str
     deleted: bool
-
-class ChartDataResponse(BaseModel):
-    dataset_id: str
-    filename: str
-    numeric_columns: list[str]
-    categorical_columns: list[str]
-    rows: list[dict]
-
-
-class ChartSeries(BaseModel):
-    name: str
-    values: list
 
 
 class HistogramData(BaseModel):

@@ -1,51 +1,93 @@
-import os
-import tempfile
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import anyio
 import numpy as np
+import pandas as pd
 from fastapi import UploadFile
 
+from backend.app.analysis.profiler import numeric_frame, profile_dataframe
+from backend.app.core.config import MAX_CONCURRENT_ANALYSES, MAX_UPLOAD_BYTES, UPLOAD_DIR
+from backend.app.ingestion.loader import load_csv, parse_csv
 from backend.app.ingestion.validator import validate_file_extension
-from backend.app.analysis.profiler import profile_dataframe
-from backend.app.ingestion.loader import load_csv
 
 
-UPLOAD_DIR = Path(os.getenv("APP_UPLOAD_DIR", "data/uploads"))
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_SCATTER_PAIRS = 6
+MAX_CHART_POINTS = 200
+
+# Les analyses en attente patientent ici au lieu de toutes charger leur CSV en même temps.
+_analysis_limiter = anyio.CapacityLimiter(MAX_CONCURRENT_ANALYSES)
 
 
-async def analyze_csv_upload(file: UploadFile) -> dict:
-    if not file.filename:
-        raise ValueError("Le nom du fichier est manquant.")
-    if not validate_file_extension(file.filename):
-        raise ValueError("Seuls les fichiers CSV sont acceptés.")
+async def _run_analysis(function, *args):
+    return await anyio.to_thread.run_sync(function, *args, limiter=_analysis_limiter)
 
-    filename = Path(file.filename).name
-    content = await file.read(MAX_UPLOAD_BYTES + 1)
-    if len(content) > MAX_UPLOAD_BYTES:
-        await file.close()
-        raise ValueError("Le fichier dépasse la limite de 10 Mo.")
 
+async def _read_csv_upload(file: UploadFile) -> tuple[str, bytes]:
+    """Valide l’upload et retourne (nom de fichier assaini, contenu)."""
     try:
-        with tempfile.TemporaryDirectory(prefix="datum-analysis-") as temporary_directory:
-            csv_path = Path(temporary_directory) / filename
-            csv_path.write_bytes(content)
-            dataframe = load_csv(csv_path)
-            analysis = profile_dataframe(dataframe)
-            return {
-                "filename": filename,
-                "file_size": len(content),
-                "analysis": analysis,
-                "charts": build_chart_data(dataframe),
-            }
+        if not file.filename:
+            raise ValueError("Le nom du fichier est manquant.")
+        if not validate_file_extension(file.filename):
+            raise ValueError("Seuls les fichiers CSV sont acceptés.")
+
+        content = await file.read(MAX_UPLOAD_BYTES + 1)
+        if len(content) > MAX_UPLOAD_BYTES:
+            raise ValueError("Le fichier dépasse la limite de 10 Mo.")
+        return Path(file.filename).name, content
     finally:
         await file.close()
 
 
-def build_chart_data(dataframe) -> dict:
-    numeric_dataframe = dataframe.select_dtypes(include="number")
-    categorical_dataframe = dataframe.select_dtypes(exclude="number")
+def _analyze_content(filename: str, content: bytes) -> dict:
+    dataframe = parse_csv(content)
+    return {
+        "filename": filename,
+        "file_size": len(content),
+        "analysis": profile_dataframe(dataframe),
+        "charts": build_chart_data(dataframe),
+    }
+
+
+async def analyze_csv_upload(file: UploadFile) -> dict:
+    """
+    Analyse un CSV entièrement en mémoire : rien n’est écrit sur disque.
+    Le calcul pandas tourne dans un thread pour ne pas bloquer le serveur.
+    """
+    filename, content = await _read_csv_upload(file)
+    return await _run_analysis(_analyze_content, filename, content)
+
+
+def _numeric_pairs(numeric_columns: list[str], limit: int | None = None):
+    count = 0
+    for index, x_column in enumerate(numeric_columns):
+        for y_column in numeric_columns[index + 1:]:
+            if limit is not None and count >= limit:
+                return
+            count += 1
+            yield x_column, y_column
+
+
+def _sample(frame: pd.DataFrame, size: int = MAX_CHART_POINTS) -> pd.DataFrame:
+    return frame.sample(n=size, random_state=0) if len(frame) > size else frame
+
+
+def _top_categories(dataframe: pd.DataFrame, limit: int) -> list[dict]:
+    categories = []
+    for column in dataframe.select_dtypes(exclude="number").columns:
+        counts = dataframe[column].dropna().astype(str).value_counts().head(limit)
+        if counts.empty:
+            continue
+        categories.append({
+            "column": column,
+            "labels": counts.index.tolist(),
+            "values": [int(value) for value in counts.to_numpy()],
+        })
+    return categories
+
+
+def build_chart_data(dataframe: pd.DataFrame) -> dict:
+    numeric_dataframe = numeric_frame(dataframe)
 
     histograms = []
     for column in numeric_dataframe.columns:
@@ -55,48 +97,30 @@ def build_chart_data(dataframe) -> dict:
         bin_count = min(12, max(1, int(np.sqrt(len(values)))))
         counts, edges = np.histogram(values, bins=bin_count)
         histograms.append({
-            "column": str(column),
+            "column": column,
             "labels": [
                 f"{left:,.3g} – {right:,.3g}"
                 for left, right in zip(edges[:-1], edges[1:])
             ],
-            "values": [int(value) for value in counts],
-            "mean": float(np.mean(values)),
+            "values": counts.tolist(),
+            "mean": float(values.mean()),
             "median": float(np.median(values)),
         })
 
-    categories = []
-    for column in categorical_dataframe.columns:
-        counts = categorical_dataframe[column].dropna().astype(str).value_counts().head(8)
-        if counts.empty:
-            continue
-        categories.append({
-            "column": str(column),
-            "labels": [str(value) for value in counts.index],
-            "values": [int(value) for value in counts.values],
+    scatter = []
+    for x_column, y_column in _numeric_pairs(list(numeric_dataframe.columns), MAX_SCATTER_PAIRS):
+        pair = _sample(numeric_dataframe[[x_column, y_column]].dropna())
+        scatter.append({
+            "x_column": x_column,
+            "y_column": y_column,
+            "points": [{"x": x, "y": y} for x, y in pair.to_numpy(dtype=float).tolist()],
         })
 
-    scatter = []
-    numeric_columns = list(numeric_dataframe.columns)
-    for index, x_column in enumerate(numeric_columns):
-        for y_column in numeric_columns[index + 1:]:
-            pair = dataframe[[x_column, y_column]].dropna()
-            if len(pair) > 200:
-                pair = pair.sample(n=200, random_state=0)
-            scatter.append({
-                "x_column": str(x_column),
-                "y_column": str(y_column),
-                "points": [
-                    {"x": float(x), "y": float(y)}
-                    for x, y in pair[[x_column, y_column]].itertuples(index=False, name=None)
-                ],
-            })
-            if len(scatter) >= 6:
-                break
-        if len(scatter) >= 6:
-            break
-
-    return {"histograms": histograms, "categories": categories, "scatter": scatter}
+    return {
+        "histograms": histograms,
+        "categories": _top_categories(dataframe, 8),
+        "scatter": scatter,
+    }
 
 
 def _user_upload_dir(user_id: str) -> Path:
@@ -111,35 +135,33 @@ def find_dataset(dataset_id: str, user_id: str) -> Path | None:
     """
     Recherche le fichier correspondant à un dataset_id.
     """
-
     try:
         normalized_dataset_id = str(UUID(dataset_id))
     except ValueError:
         return None
-    matching_files = list(_user_upload_dir(user_id).glob(f"{normalized_dataset_id}_*"))
+    return next(_user_upload_dir(user_id).glob(f"{normalized_dataset_id}_*"), None)
 
-    if not matching_files:
-        return None
 
-    return matching_files[0]
+def _require_dataset(dataset_id: str, user_id: str) -> Path:
+    file_path = find_dataset(dataset_id, user_id)
+    if file_path is None:
+        raise FileNotFoundError("Dataset not found.")
+    return file_path
+
+
+def _original_filename(file_path: Path, dataset_id: str) -> str:
+    return file_path.name.removeprefix(f"{dataset_id}_")
 
 
 def get_dataset_summary(dataset_id: str, user_id: str) -> dict:
     """
     Charge et analyse un dataset.
     """
-
-    file_path = find_dataset(dataset_id, user_id)
-
-    if file_path is None:
-        raise FileNotFoundError("Dataset not found.")
-
-    dataframe = load_csv(file_path)
-
+    file_path = _require_dataset(dataset_id, user_id)
     return {
         "dataset_id": dataset_id,
-        "filename": file_path.name.removeprefix(f"{dataset_id}_"),
-        "analysis": profile_dataframe(dataframe)
+        "filename": _original_filename(file_path, dataset_id),
+        "analysis": profile_dataframe(load_csv(file_path)),
     }
 
 
@@ -147,30 +169,20 @@ def list_datasets(user_id: str) -> list[dict]:
     """
     Retourne tous les datasets disponibles.
     """
-
-    datasets = []
-
     user_dir = _user_upload_dir(user_id)
     if not user_dir.exists():
-        return datasets
+        return []
 
+    datasets = []
     for file_path in user_dir.iterdir():
-        if not file_path.is_file():
+        if not file_path.is_file() or "_" not in file_path.name:
             continue
-
-        filename = file_path.name
-
-        if "_" not in filename:
-            continue
-
-        dataset_id, original_filename = filename.split("_", 1)
-
+        dataset_id, original_filename = file_path.name.split("_", 1)
         datasets.append({
             "dataset_id": dataset_id,
             "filename": original_filename,
-            "size_bytes": file_path.stat().st_size
+            "size_bytes": file_path.stat().st_size,
         })
-
     return datasets
 
 
@@ -178,190 +190,83 @@ def delete_dataset(dataset_id: str, user_id: str) -> dict:
     """
     Supprime un dataset.
     """
-
-    file_path = find_dataset(dataset_id, user_id)
-
-    if file_path is None:
-        raise FileNotFoundError("Dataset not found.")
-
-    filename = file_path.name.removeprefix(f"{dataset_id}_")
-
+    file_path = _require_dataset(dataset_id, user_id)
     file_path.unlink()
-
     return {
         "dataset_id": dataset_id,
-        "filename": filename,
-        "deleted": True
+        "filename": _original_filename(file_path, dataset_id),
+        "deleted": True,
     }
 
+
+def _save_and_analyze(file_path: Path, content: bytes) -> pd.DataFrame:
+    dataframe = parse_csv(content)
+    file_path.write_bytes(content)
+    return dataframe
 
 
 async def upload_dataset(file: UploadFile, user_id: str) -> dict:
     """
     Enregistre un fichier CSV et retourne son analyse.
     """
-
-    if not file.filename:
-        raise ValueError("Filename is missing.")
-
-    if not validate_file_extension(file.filename):
-        raise ValueError("Only CSV files are allowed.")
+    original_filename, content = await _read_csv_upload(file)
 
     dataset_id = str(uuid4())
-
-    # Évite d'utiliser un chemin fourni par le client.
-    original_filename = Path(file.filename).name
-
     user_dir = _user_upload_dir(user_id)
     user_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"{dataset_id}_{original_filename}"
-    file_path = user_dir / filename
+    file_path = user_dir / f"{dataset_id}_{original_filename}"
 
-    content = await file.read(MAX_UPLOAD_BYTES + 1)
-    if len(content) > MAX_UPLOAD_BYTES:
-        await file.close()
-        raise ValueError("Le fichier dépasse la limite de 10 Mo.")
-
-    try:
-        with open(file_path, "wb") as buffer:
-            buffer.write(content)
-
-        dataframe = load_csv(file_path)
-
-        return {
-            "dataset_id": dataset_id,
-            "filename": original_filename,
-            "rows": len(dataframe),
-            "columns": len(dataframe.columns),
-            "analysis": profile_dataframe(dataframe),
-        }
-
-    except Exception:
-        file_path.unlink(missing_ok=True)
-        raise
-
-    finally:
-        await file.close()
+    # Le CSV est validé avant écriture : un fichier invalide n’est jamais stocké.
+    dataframe = await _run_analysis(_save_and_analyze, file_path, content)
+    analysis = await _run_analysis(profile_dataframe, dataframe)
+    return {
+        "dataset_id": dataset_id,
+        "filename": original_filename,
+        "rows": len(dataframe),
+        "columns": len(dataframe.columns),
+        "analysis": analysis,
+    }
 
 
 def get_dataset_chart_data(dataset_id: str, user_id: str) -> dict:
-    file_path = find_dataset(dataset_id, user_id)
-
-    if file_path is None:
-        raise FileNotFoundError("Dataset not found.")
-
+    file_path = _require_dataset(dataset_id, user_id)
     dataframe = load_csv(file_path)
+    numeric_dataframe = numeric_frame(dataframe)
 
-    # Nombre maximum de points envoyés au frontend
-    MAX_POINTS = 200
-
-    numeric_dataframe = dataframe.select_dtypes(
-        include="number"
-    )
-
-    histograms = []
-
-    for column in numeric_dataframe.columns:
-        series = (
-            numeric_dataframe[column]
-            .dropna()
-        )
-
-        if len(series) > MAX_POINTS:
-            step = max(1, len(series) // MAX_POINTS)
-            series = series.iloc[::step].head(MAX_POINTS)
-
-        histograms.append({
+    histograms = [
+        {
             "column": column,
-            "values": [
-                float(value)
-                for value in series.tolist()
-            ]
-        })
-
-    categorical_columns = dataframe.select_dtypes(
-        exclude="number"
-    ).columns
-
-    categories = []
-
-    for column in categorical_columns:
-        counts = (
-            dataframe[column]
-            .dropna()
-            .astype(str)
-            .value_counts()
-            .head(20)
-        )
-
-        categories.append({
-            "column": column,
-            "labels": [
-                str(label)
-                for label in counts.index.tolist()
-            ],
-            "values": [
-                int(value)
-                for value in counts.values.tolist()
-            ]
-        })
+            "values": _sample(numeric_dataframe[[column]].dropna())[column].tolist(),
+        }
+        for column in numeric_dataframe.columns
+    ]
 
     scatter = []
-
-    numeric_columns = list(
-        numeric_dataframe.columns
-    )
-
-    for index, x_column in enumerate(numeric_columns):
-        for y_column in numeric_columns[index + 1:]:
-            pair = dataframe[
-                [x_column, y_column]
-            ].dropna()
-
-            if len(pair) > MAX_POINTS:
-                step = max(1, len(pair) // MAX_POINTS)
-                pair = pair.iloc[::step].head(MAX_POINTS)
-
-            scatter.append({
-                "x_column": x_column,
-                "y_column": y_column,
-                "x_values": [
-                    float(value)
-                    for value in pair[x_column].tolist()
-                ],
-                "y_values": [
-                    float(value)
-                    for value in pair[y_column].tolist()
-                ]
-            })
-
-    missing = []
-
-    for column in dataframe.columns:
-        missing_count = int(
-            dataframe[column].isna().sum()
-        )
-
-        missing_percentage = float(
-            dataframe[column].isna().mean() * 100
-        )
-
-        missing.append({
-            "column": column,
-            "missing": missing_count,
-            "percentage": round(
-                missing_percentage,
-                2
-            )
+    for x_column, y_column in _numeric_pairs(list(numeric_dataframe.columns)):
+        pair = _sample(numeric_dataframe[[x_column, y_column]].dropna())
+        scatter.append({
+            "x_column": x_column,
+            "y_column": y_column,
+            "x_values": pair[x_column].tolist(),
+            "y_values": pair[y_column].tolist(),
         })
+
+    row_count = len(dataframe)
+    missing_counts = dataframe.isna().sum()
+    missing = [
+        {
+            "column": column,
+            "missing": int(missing_counts[column]),
+            "percentage": round(int(missing_counts[column]) / row_count * 100, 2) if row_count else 0.0,
+        }
+        for column in dataframe.columns
+    ]
 
     return {
         "dataset_id": dataset_id,
-        "filename": file_path.name.removeprefix(
-            f"{dataset_id}_"
-        ),
+        "filename": _original_filename(file_path, dataset_id),
         "histograms": histograms,
-        "categories": categories,
+        "categories": _top_categories(dataframe, 20),
         "scatter": scatter,
         "missing": missing,
     }
@@ -372,21 +277,17 @@ def _format_number(value: float) -> str:
 
 
 def answer_dataset_question(dataset_id: str, user_id: str, question: str) -> dict:
-    file_path = find_dataset(dataset_id, user_id)
-    if file_path is None:
-        raise FileNotFoundError("Dataset not found.")
-
-    dataframe = load_csv(file_path)
+    dataframe = load_csv(_require_dataset(dataset_id, user_id))
     normalized_question = question.casefold()
-    numeric = dataframe.select_dtypes(include="number")
+    numeric = numeric_frame(dataframe)
     formatted_rows = f"{len(dataframe):,}".replace(",", " ")
     matching_column = next(
-        (column for column in dataframe.columns if str(column).casefold() in normalized_question),
+        (column for column in dataframe.columns if column.casefold() in normalized_question),
         None,
     )
 
     if any(word in normalized_question for word in ("colonne", "champ", "variables")):
-        answer = "Les colonnes de ce fichier sont : " + ", ".join(map(str, dataframe.columns)) + "."
+        answer = "Les colonnes de ce fichier sont : " + ", ".join(dataframe.columns) + "."
     elif any(word in normalized_question for word in ("ligne", "enregistrement", "observation")):
         answer = f"Ce jeu de données contient {formatted_rows} lignes et {len(dataframe.columns)} colonnes."
     elif any(word in normalized_question for word in ("manquant", "vide", "absent", "null")):
@@ -424,7 +325,7 @@ def answer_dataset_question(dataset_id: str, user_id: str, question: str) -> dic
             answer = f"Valeurs les plus fréquentes de « {matching_column} » : {top_values}."
     else:
         answer = (
-            f"J’ai analysé {len(dataframe):,} lignes et {len(dataframe.columns)} colonnes, "
+            f"J’ai analysé {formatted_rows} lignes et {len(dataframe.columns)} colonnes, "
             f"dont {len(numeric.columns)} numériques. Posez une question sur les colonnes, "
             "les valeurs manquantes, ou une statistique en citant le nom d’une colonne."
         )

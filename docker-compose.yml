@@ -11,6 +11,10 @@ services:
       APP_COOKIE_SECURE: "true"
       CORS_ORIGINS: https://${DOMAIN:?Set DOMAIN in .env}
       ANALYTICS_ADMIN_TOKEN: ${ANALYTICS_ADMIN_TOKEN:?Set ANALYTICS_ADMIN_TOKEN in .env}
+      API_DOCS_ENABLED: "false"
+      MAX_CONCURRENT_ANALYSES: ${MAX_CONCURRENT_ANALYSES:-2}
+    mem_limit: ${API_MEM_LIMIT:-1g}
+    cpus: 1.5
     volumes:
       - app_data:/app/data
     healthcheck:
@@ -29,6 +33,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: 128m
     depends_on:
       api:
         condition: service_healthy
@@ -39,8 +44,9 @@ services:
       retries: 3
 
   proxy:
-    image: caddy:2-alpine
+    image: caddy:2.11-alpine
     restart: unless-stopped
+    mem_limit: 256m
     depends_on:
       frontend:
         condition: service_healthy

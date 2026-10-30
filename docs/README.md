@@ -1,10 +1,19 @@
 # DataClair
 
-DataClair analyse un fichier CSV sans compte. Le fichier est traité dans un répertoire temporaire et supprimé après le calcul; le navigateur conserve le rapport uniquement en mémoire tant que la page reste ouverte.
+DataClair analyse un fichier CSV sans compte. Le fichier est analysé en mémoire, sans jamais être écrit sur disque ; le navigateur conserve le rapport uniquement en mémoire tant que la page reste ouverte.
 
 La mesure d’audience est facultative et démarre seulement après acceptation explicite. Elle compte des visiteurs pseudonymes, les sections consultées et quelques actions d’usage. Elle ne collecte ni adresse IP dans la base d’audience, ni nom de fichier, ni contenu CSV, ni identité. Refuser ne bloque aucune fonctionnalité; retirer son accord efface les événements liés au cookie pseudonyme.
 
 ## Lancer en local
+
+Installez les dépendances (`requirements-dev.txt` ajoute pytest à celles de production) :
+
+```powershell
+.\venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+npm --prefix frontend ci
+```
+
+Lancez les tests avec `.\venv\Scripts\python.exe -m pytest backend/tests`.
 
 Depuis la racine du projet, démarrez l’API :
 
@@ -30,7 +39,7 @@ Puis ouvrez <http://127.0.0.1:5174/admin/analytics> et saisissez cette clé. La 
 
 ## Utiliser l’outil
 
-Déposez ou choisissez un fichier `.csv` de 10 Mo maximum et lancez l’analyse. Le rapport affiche le volume et la qualité des données, les distributions numériques, les catégories fréquentes, les statistiques descriptives, un nuage de points et les corrélations triées par intensité. Le bouton de téléchargement produit un rapport HTML autonome, imprimable ou enregistrable en PDF depuis le navigateur.
+Déposez ou choisissez un fichier `.csv` de 10 Mo maximum et lancez l’analyse. L’encodage (UTF-8 ou Windows-1252) et le séparateur (`,`, `;`, tabulation, `|`) sont détectés automatiquement : les exports Excel français, avec `;` et virgule décimale, sont lus correctement. Le rapport affiche le volume et la qualité des données, les distributions numériques, les catégories fréquentes, les statistiques descriptives, un nuage de points et les corrélations triées par intensité. Le bouton de téléchargement produit un rapport HTML autonome, imprimable ou enregistrable en PDF depuis le navigateur.
 
 Les corrélations utilisent le coefficient de Pearson. Elles décrivent une association linéaire, pas une causalité. Une paire est affichée une seule fois; les colonnes constantes ou non numériques ne produisent pas de coefficient exploitable.
 
@@ -42,4 +51,4 @@ L’API `POST /analysis` reçoit le champ `file` en `multipart/form-data`. Elle 
 
 Les routes `GET /analytics/consent`, `POST /analytics/consent` et `POST /analytics/events` gèrent le consentement et les événements autorisés. `GET /analytics/summary` exige `Authorization: Bearer <ANALYTICS_ADMIN_TOKEN>`. Les événements sont purgés après 180 jours. La base `data/analytics.sqlite3` est locale et exclue de Git. L’application ne journalise pas l’adresse IP dans les statistiques; un reverse proxy peut avoir ses propres journaux d’accès à configurer séparément. Utilisez le même domaine de site pour le frontend et l’API, ou un proxy same-origin, afin que le cookie de consentement fonctionne correctement.
 
-En cas d’hébergement public, ajoutez une limitation de débit et une limite de taille équivalente sur le reverse proxy. Les données temporaires du système peuvent subsister jusqu’à la fermeture du processus ou le nettoyage du système d’exploitation; configurez le répertoire temporaire du serveur conformément à votre politique de confidentialité.
+En cas d’hébergement public, ajoutez une limitation de débit et une limite de taille équivalente sur le reverse proxy.

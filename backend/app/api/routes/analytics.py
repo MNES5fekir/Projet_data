@@ -5,6 +5,7 @@ import secrets
 from fastapi import APIRouter, Header, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
+from backend.app.core.config import COOKIE_SECURE
 from backend.app.services.analytics_service import (
     get_analytics_summary,
     record_event,
@@ -16,7 +17,6 @@ router = APIRouter(prefix="/analytics", tags=["analytics"])
 CONSENT_COOKIE = "dataclair_consent"
 VISITOR_COOKIE = "dataclair_visitor"
 COOKIE_MAX_AGE = 60 * 60 * 24 * 180
-COOKIE_SECURE = os.getenv("APP_COOKIE_SECURE", "false").lower() == "true"
 
 
 class ConsentRequest(BaseModel):
@@ -55,15 +55,7 @@ def save_consent(consent: ConsentRequest, request: Request, response: Response):
 
     revoke_visitor(request.cookies.get(VISITOR_COOKIE))
     response.delete_cookie(VISITOR_COOKIE, httponly=True, secure=COOKIE_SECURE, samesite="lax", path="/")
-    response.set_cookie(
-        CONSENT_COOKIE,
-        "rejected",
-        max_age=COOKIE_MAX_AGE,
-        httponly=True,
-        secure=COOKIE_SECURE,
-        samesite="lax",
-        path="/",
-    )
+    _set_cookie(response, CONSENT_COOKIE, "rejected", COOKIE_MAX_AGE)
     return {"choice": "rejected"}
 
 

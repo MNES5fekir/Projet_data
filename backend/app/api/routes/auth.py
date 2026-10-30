@@ -13,6 +13,7 @@ from backend.app.core.security import (
     get_current_user,
     revoke_session,
 )
+from backend.app.core.exceptions import UserAlreadyExistsError
 
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
@@ -48,8 +49,10 @@ def _set_session(response: Response, user: dict) -> dict:
 def register(credentials: Credentials, response: Response):
     try:
         user = create_user(credentials.email, credentials.password)
-    except ValueError as exc:
+    except UserAlreadyExistsError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return _set_session(response, user)
 
 

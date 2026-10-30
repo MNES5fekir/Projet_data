@@ -1,24 +1,24 @@
 import hashlib
 import hmac
-import os
 import secrets
 import sqlite3
 import time
-from pathlib import Path
 from uuid import uuid4
 
 from fastapi import HTTPException, Request, status
 
+from backend.app.core.config import APP_DB_PATH as DATABASE_PATH
+from backend.app.core.config import COOKIE_SECURE
+from backend.app.core.exceptions import UserAlreadyExistsError
 
-DATA_DIR = Path(os.getenv("APP_DATA_DIR", "data"))
-DATABASE_PATH = DATA_DIR / "app.sqlite3"
+
 SESSION_COOKIE = "data_session"
 SESSION_TTL = 60 * 60 * 24 * 7
 PBKDF2_ITERATIONS = 310_000
 
 
 def _connect() -> sqlite3.Connection:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DATABASE_PATH, timeout=10)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
@@ -27,6 +27,7 @@ def _connect() -> sqlite3.Connection:
 
 def initialize_database() -> None:
     with _connect() as connection:
+        connection.execute("PRAGMA journal_mode = WAL")
         connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -59,6 +60,11 @@ def _verify_password(password: str, stored_hash: str) -> bool:
     return hmac.compare_digest(candidate, f"{salt_hex}:{digest_hex}")
 
 
+# Hash factice : un e-mail inconnu coûte le même temps de calcul qu'un e-mail connu,
+# ce qui empêche de deviner les comptes existants via le temps de réponse.
+_DUMMY_PASSWORD_HASH = _hash_password(secrets.token_urlsafe(16))
+
+
 def create_user(email: str, password: str) -> dict:
     normalized_email = email.strip().lower()
     if len(normalized_email) > 254 or "@" not in normalized_email:
@@ -79,7 +85,7 @@ def create_user(email: str, password: str) -> dict:
                 (user["user_id"], user["email"], user["password_hash"], user["created_at"]),
             )
     except sqlite3.IntegrityError as exc:
-        raise ValueError("Un compte existe déjà avec cette adresse e-mail.") from exc
+        raise UserAlreadyExistsError("Un compte existe déjà avec cette adresse e-mail.") from exc
     return {"user_id": user["user_id"], "email": user["email"]}
 
 
@@ -89,7 +95,10 @@ def authenticate_user(email: str, password: str) -> dict | None:
             "SELECT user_id, email, password_hash FROM users WHERE email = ?",
             (email.strip().lower(),),
         ).fetchone()
-    if user is None or not _verify_password(password, user["password_hash"]):
+    if user is None:
+        _verify_password(password, _DUMMY_PASSWORD_HASH)
+        return None
+    if not _verify_password(password, user["password_hash"]):
         return None
     return {"user_id": user["user_id"], "email": user["email"]}
 
@@ -139,5 +148,4 @@ def get_current_user(request: Request) -> dict:
     return user
 
 
-COOKIE_SECURE = os.getenv("APP_COOKIE_SECURE", "false").lower() == "true"
 initialize_database()

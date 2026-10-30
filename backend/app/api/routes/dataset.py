@@ -1,3 +1,7 @@
+import logging
+from collections.abc import Callable
+from contextlib import contextmanager
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
@@ -10,8 +14,6 @@ from backend.app.schemas.dataset import (
     DatasetStatisticsResponse,
     DatasetSummaryResponse,
 )
-
-
 from backend.app.services.dataset_service import (
     answer_dataset_question,
     delete_dataset,
@@ -22,166 +24,98 @@ from backend.app.services.dataset_service import (
 )
 
 
-
-router = APIRouter(
-    prefix="/datasets",
-    tags=["datasets"]
-)
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/datasets", tags=["datasets"])
 
 
 class QuestionRequest(BaseModel):
     question: str = Field(min_length=1, max_length=1000)
 
-@router.post(
-    "/upload",
-    response_model=DatasetCreateResponse
-)
+
+@contextmanager
+def _dataset_errors(action: str):
+    """Traduit les erreurs du service en réponses HTTP sans exposer les détails internes."""
+    try:
+        yield
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Dataset not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Dataset error while trying to %s", action)
+        raise HTTPException(status_code=500, detail=f"Unable to {action}.") from exc
+
+
+def _call(action: str, function: Callable, *args):
+    with _dataset_errors(action):
+        return function(*args)
+
+
+@router.post("/upload", response_model=DatasetCreateResponse)
 async def upload_dataset_route(
     file: UploadFile = File(...), user: dict = Depends(get_current_user)
 ):
     """
     Upload un fichier CSV.
     """
-
-    try:
+    with _dataset_errors("process CSV file"):
         return await upload_dataset(file, user["user_id"])
-
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=str(exc)
-        )
-
-    except Exception as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unable to process CSV file: {exc}"
-        )
 
 
 @router.get("", response_model=DatasetListResponse)
-async def get_datasets(user: dict = Depends(get_current_user)):
+def get_datasets(user: dict = Depends(get_current_user)):
     """
     Retourne la liste des datasets.
     """
-
-    return {
-        "count": len(list_datasets(user["user_id"])),
-        "datasets": list_datasets(user["user_id"])
-    }
+    datasets = list_datasets(user["user_id"])
+    return {"count": len(datasets), "datasets": datasets}
 
 
 @router.get("/{dataset_id}/summary", response_model=DatasetSummaryResponse)
-async def get_summary(dataset_id: str, user: dict = Depends(get_current_user)):
+def get_summary(dataset_id: str, user: dict = Depends(get_current_user)):
     """
     Retourne le résumé analytique d'un dataset.
     """
-
-    try:
-        return get_dataset_summary(dataset_id, user["user_id"])
-
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=404,
-            detail="Dataset not found."
-        )
-
-    except Exception as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unable to analyze dataset: {exc}"
-        )
+    return _call("analyze dataset", get_dataset_summary, dataset_id, user["user_id"])
 
 
 @router.delete("/{dataset_id}", response_model=DatasetDeleteResponse)
-async def delete_dataset_route(dataset_id: str, user: dict = Depends(get_current_user)):
+def delete_dataset_route(dataset_id: str, user: dict = Depends(get_current_user)):
     """
     Supprime un dataset.
     """
-
-    try:
-        return delete_dataset(dataset_id, user["user_id"])
-
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=404,
-            detail="Dataset not found."
-        )
-
-    except OSError as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Unable to delete dataset: {exc}"
-        )
+    return _call("delete dataset", delete_dataset, dataset_id, user["user_id"])
 
 
-
-@router.get(
-    "/{dataset_id}/statistics",
-    response_model=DatasetStatisticsResponse
-)
-async def get_statistics(dataset_id: str, user: dict = Depends(get_current_user)):
+@router.get("/{dataset_id}/statistics", response_model=DatasetStatisticsResponse)
+def get_statistics(dataset_id: str, user: dict = Depends(get_current_user)):
     """
     Retourne les statistiques détaillées d'un dataset.
     """
-
-    try:
-        summary = get_dataset_summary(dataset_id, user["user_id"])
-
-        return {
-            "dataset_id": summary["dataset_id"],
-            "filename": summary["filename"],
-            "statistics": summary["analysis"]["statistics"],
-            "columns": summary["analysis"]["columns"],
-            "correlations": summary["analysis"]["correlations"],
-            "outliers": summary["analysis"]["outliers"],
-        }
-
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=404,
-            detail="Dataset not found."
-        )
-
-    except Exception as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unable to calculate statistics: {exc}"
-        )
+    summary = _call("calculate statistics", get_dataset_summary, dataset_id, user["user_id"])
+    analysis = summary["analysis"]
+    return {
+        "dataset_id": summary["dataset_id"],
+        "filename": summary["filename"],
+        "statistics": analysis["statistics"],
+        "columns": analysis["columns"],
+        "correlations": analysis["correlations"],
+        "outliers": analysis["outliers"],
+    }
 
 
-@router.get(
-    "/{dataset_id}/chart-data",
-    response_model=ChartDataResponse
-)
-async def get_chart_data(dataset_id: str, user: dict = Depends(get_current_user)):
+@router.get("/{dataset_id}/chart-data", response_model=ChartDataResponse)
+def get_chart_data(dataset_id: str, user: dict = Depends(get_current_user)):
     """
     Retourne les données nécessaires aux graphiques.
     """
-
-    try:
-        return get_dataset_chart_data(dataset_id, user["user_id"])
-
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=404,
-            detail="Dataset not found."
-        )
-
-    except Exception as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unable to prepare chart data: {exc}"
-        )
+    return _call("prepare chart data", get_dataset_chart_data, dataset_id, user["user_id"])
 
 
 @router.post("/{dataset_id}/ask")
-async def ask_dataset(
+def ask_dataset(
     dataset_id: str,
     request: QuestionRequest,
     user: dict = Depends(get_current_user),
 ):
-    try:
-        return answer_dataset_question(dataset_id, user["user_id"], request.question)
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Dataset not found.")
+    return _call("answer question", answer_dataset_question, dataset_id, user["user_id"], request.question)

@@ -1,14 +1,9 @@
 import hashlib
-import os
 import sqlite3
 import time
-from pathlib import Path
 
+from backend.app.core.config import ANALYTICS_DB_PATH as DATABASE_PATH
 
-DATA_DIR = Path(os.getenv("APP_DATA_DIR", "data"))
-DATABASE_PATH = Path(
-    os.getenv("ANALYTICS_DB_PATH", str(DATA_DIR / "analytics.sqlite3"))
-)
 RETENTION_SECONDS = 60 * 60 * 24 * 180
 EVENT_NAMES = {
     "page_view",
@@ -41,6 +36,7 @@ def _connect() -> sqlite3.Connection:
 
 def initialize_database() -> None:
     with _connect() as connection:
+        connection.execute("PRAGMA journal_mode = WAL")
         connection.execute(
             """CREATE TABLE IF NOT EXISTS analytics_events (
                 event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,7 +50,7 @@ def initialize_database() -> None:
             "CREATE INDEX IF NOT EXISTS analytics_created_at_idx ON analytics_events(created_at)"
         )
         connection.execute(
-            "CREATE INDEX IF NOT EXISTS analytics_visitor_hash_idx ON analytics_events(visitor_hash)"
+            "CREATE INDEX IF NOT EXISTS analytics_visitor_time_idx ON analytics_events(visitor_hash, created_at)"
         )
 
 

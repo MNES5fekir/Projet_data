@@ -1,11 +1,9 @@
-from fastapi import FastAPI
+from fastapi import APIRouter
 
-app = FastAPI(
-    version= "1.0",
-    title=" AI DATA ANALYST API"
 
-)
+router = APIRouter(tags=["health"])
 
-app.get("/health")
+
+@router.get("/health")
 def health():
-    return{"status": "ok"}
+    return {"status": "ok"}
