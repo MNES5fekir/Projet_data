@@ -1,0 +1,17 @@
+{
+  "name": "Ñawkat — Tailleurs du Sénégal",
+  "short_name": "Ñawkat",
+  "description": "Trouvez votre tailleur, envoyez votre modèle et payez en toute sécurité.",
+  "lang": "fr-SN",
+  "start_url": "/#/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#faf7f2",
+  "theme_color": "#1f1c4d",
+  "categories": ["shopping", "lifestyle"],
+  "icons": [
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icons/icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

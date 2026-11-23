@@ -1,0 +1,19 @@
+{
+  "name": "nawkat",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ñawkat — plateforme de mise en relation entre tailleurs et particuliers au Sénégal",
+  "type": "module",
+  "main": "server/index.js",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "seed": "node server/seed.js",
+    "test": "node --no-warnings --test tests/*.test.js"
+  },
+  "dependencies": {
+    "express": "5.1.0",
+    "multer": "2.0.2"
+  }
+}
